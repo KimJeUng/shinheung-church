@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PDF 뷰어</title>
+  <style>
+    body{margin:0;background:#0b0f19;color:#e5e7eb;font:14px/1.5 system-ui,-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif}
+    header{position:sticky;top:0;z-index:10;display:flex;gap:10px;align-items:center;padding:10px 12px;
+      border-bottom:1px solid rgba(255,255,255,.12);background:rgba(11,15,25,.92);backdrop-filter:blur(8px)}
+    .btn{padding:8px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.16);background:transparent;color:#e5e7eb;font-weight:700;cursor:pointer}
+    .btn:disabled{opacity:.45;cursor:not-allowed}
+    .sp{flex:1}
+    .meta{color:rgba(229,231,235,.7);font-size:12px}
+    main{max-width:1000px;margin:0 auto;padding:18px}
+    .canvasWrap{border:1px solid rgba(255,255,255,.12);border-radius:14px;overflow:hidden;background:#111827}
+    canvas{display:block;width:100%;height:auto}
+    a{color:#e5e7eb}
+  </style>
+
+  <!-- pdf.js (CDN) -->
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.js"></script>
+</head>
+<body>
+  <header>
+    <button class="btn" id="prev">◀ 이전</button>
+    <button class="btn" id="next">다음 ▶</button>
+    <button class="btn" id="zoomOut">－</button>
+    <button class="btn" id="zoomIn">＋</button>
+    <span class="meta" id="pageInfo">page</span>
+    <span class="sp"></span>
+    <a class="btn" id="openRaw" target="_blank" rel="noopener">PDF 새 창</a>
+  </header>
+
+  <main>
+    <div class="canvasWrap">
+      <canvas id="pdfCanvas"></canvas>
+    </div>
+    <p class="meta" id="hint" style="margin-top:10px;"></p>
+  </main>
+
+  <script>
+    // pdf.js worker 설정
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.js";
+
+    const qs = new URLSearchParams(location.search);
+
+    // 기본 파일: docs/files 안에 있는 PDF (같은 도메인 상대경로)
+    // 한글 파일명도 동작하지만, 환경에 따라 URL 인코딩 이슈가 있으면 파일명을 영문으로 바꾸는 게 더 안정적입니다.
+    const defaultFile = "files/2026_찬양세미나_전체강의.pdf";
+
+    const file = qs.get("file") || defaultFile;
+
+    const canvas = document.getElementById("pdfCanvas");
+    const ctx = canvas.getContext("2d");
+
+    const prevBtn = document.getElementById("prev");
+    const nextBtn = document.getElementById("next");
+    const zoomInBtn = document.getElementById("zoomIn");
+    const zoomOutBtn = document.getElementById("zoomOut");
+    const pageInfo = document.getElementById("pageInfo");
+    const openRaw = document.getElementById("openRaw");
+    const hint = document.getElementById("hint");
+
+    openRaw.href = file;
+
+    let pdfDoc = null;
+    let pageNum = 1;
+    let scale = 1.2;
+    let rendering = false;
+    let pendingPage = null;
+
+    function setButtons() {
+      prevBtn.disabled = (pageNum <= 1) || rendering;
+      nextBtn.disabled = (!pdfDoc || pageNum >= pdfDoc.numPages) || rendering;
+      zoomInBtn.disabled = rendering;
+      zoomOutBtn.disabled = rendering;
+      pageInfo.textContent = pdfDoc
+        ? `p. ${pageNum} / ${pdfDoc.numPages}   (zoom ${Math.round(scale*100)}%)`
+        : "loading...";
+    }
+
+    async function renderPage(num) {
+      rendering = true;
+      setButtons();
+
+      const page = await pdfDoc.getPage(num);
+      const viewport = page.getViewport({ scale });
+
+      // retina 대응
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.floor(viewport.width * dpr);
+      canvas.height = Math.floor(viewport.height * dpr);
+      canvas.style.width = `${Math.floor(viewport.width)}px`;
+      canvas.style.height = `${Math.floor(viewport.height)}px`;
+
+      const transform = [dpr, 0, 0, dpr, 0, 0];
+      const renderContext = { canvasContext: ctx, viewport, transform };
+
+      await page.render(renderContext).promise;
+
+      rendering = false;
+      setButtons();
+
+      if (pendingPage !== null) {
+        const p = pendingPage;
+        pendingPage = null;
+        renderPage(p);
+      }
+    }
+
+    function queueRender(num) {
+      if (rendering) pendingPage = num;
+      else renderPage(num);
+    }
+
+    prevBtn.addEventListener("click", () => {
+      if (pageNum <= 1) return;
+      pageNum--;
+      queueRender(pageNum);
+    });
+
+    nextBtn.addEventListener("click", () => {
+      if (!pdfDoc || pageNum >= pdfDoc.numPages) return;
+      pageNum++;
+      queueRender(pageNum);
+    });
+
+    zoomInBtn.addEventListener("click", () => {
+      scale = Math.min(scale + 0.2, 3.0);
+      queueRender(pageNum);
+    });
+
+    zoomOutBtn.addEventListener("click", () => {
+      scale = Math.max(scale - 0.2, 0.6);
+      queueRender(pageNum);
+    });
+
+    (async function init() {
+      try {
+        hint.textContent = `파일: ${file}`;
+        pdfDoc = await pdfjsLib.getDocument(file).promise;
+        setButtons();
+        await renderPage(pageNum);
+      } catch (e) {
+        console.error(e);
+        hint.innerHTML =
+          "PDF를 불러오지 못했습니다. (한글 파일명 URL 인코딩 이슈일 수 있어요) " +
+          "<br>해결: PDF 파일명을 영문으로 바꾸고, viewer.html의 defaultFile을 그 이름으로 변경하면 가장 안정적입니다.";
+      }
+    })();
+  </script>
+</body>
+</html>
